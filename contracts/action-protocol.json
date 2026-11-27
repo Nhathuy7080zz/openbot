@@ -1,0 +1,367 @@
+{
+  "version": "2.1.0",
+  "coordinate_space": {
+    "min": 0.0,
+    "max": 1.0,
+    "origin": "top_left",
+    "description": "Normalized [0..1] viewport/canvas coordinates mapped dynamically via live #game-input-overlay bounding rect"
+  },
+  "ipc": {
+    "host": "127.0.0.1",
+    "default_port": 8765,
+    "ws_action_path": "/ws/actions",
+    "http_health_path": "/health",
+    "http_webrtc_offer_path": "/webrtc/offer",
+    "message_schemas": {
+      "action_request": {
+        "type": "action_request",
+        "required": [
+          "type",
+          "call_id",
+          "session_id",
+          "tool_name",
+          "arguments",
+          "frame_captured_at_ms",
+          "model_emitted_at_ms"
+        ],
+        "properties": {
+          "type": { "const": "action_request" },
+          "call_id": { "type": "string", "minLength": 1 },
+          "session_id": { "type": "string", "minLength": 1 },
+          "tool_name": { "type": "string", "minLength": 1 },
+          "arguments": { "type": "object" },
+          "frame_captured_at_ms": { "type": "number", "minimum": 0 },
+          "model_emitted_at_ms": { "type": "number", "minimum": 0 }
+        }
+      },
+      "action_response": {
+        "type": "action_response",
+        "required": [
+          "type",
+          "call_id",
+          "status",
+          "summary",
+          "next_actions",
+          "artifacts",
+          "latency_ms",
+          "scheduling"
+        ],
+        "properties": {
+          "type": { "const": "action_response" },
+          "call_id": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["success", "warning", "failed", "error"] },
+          "summary": { "type": "string", "minLength": 1 },
+          "next_actions": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "artifacts": { "type": "object" },
+          "latency_ms": { "type": "number", "minimum": 0 },
+          "scheduling": { "enum": ["SILENT", "WHEN_IDLE", "INTERRUPT"] },
+          "recovery": {
+            "type": "object",
+            "required": ["root_cause", "safe_retry", "stop_condition"],
+            "properties": {
+              "root_cause": { "type": "string", "minLength": 1 },
+              "safe_retry": { "type": "string", "minLength": 1 },
+              "stop_condition": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      },
+      "session_status": {
+        "type": "session_status",
+        "required": [
+          "type",
+          "session_id",
+          "state",
+          "resumption_handle_present",
+          "timestamp_ms"
+        ],
+        "properties": {
+          "type": { "const": "session_status" },
+          "session_id": { "type": "string", "minLength": 1 },
+          "state": { "enum": ["connected", "go_away", "resumed", "reconnecting", "closed", "error"] },
+          "resumption_handle_present": { "type": "boolean" },
+          "timestamp_ms": { "type": "number", "minimum": 0 }
+        }
+      },
+      "ping_pong": {
+        "required": ["type", "timestamp_ms"],
+        "properties": {
+          "type": { "enum": ["ping", "pong"] },
+          "timestamp_ms": { "type": "number", "minimum": 0 }
+        }
+      },
+      "hud_snapshot": {
+        "type": "hud_snapshot",
+        "required": ["type", "timestamp_ms", "panel_visible", "game_over"],
+        "properties": {
+          "type": { "const": "hud_snapshot" },
+          "timestamp_ms": { "type": "number", "minimum": 0 },
+          "panel_visible": { "type": "boolean" },
+          "game_over": { "type": "boolean" },
+          "gold": { "type": ["number", "null"] },
+          "gold_text": { "type": ["string", "null"] },
+          "troops": { "type": ["number", "null"] },
+          "max_troops": { "type": ["number", "null"] },
+          "troop_rate": { "type": ["string", "null"] },
+          "attack_ratio_pct": { "type": ["number", "null"] },
+          "match_timer": { "type": ["string", "null"] },
+          "game_over_text": { "type": ["string", "null"] }
+        }
+      }
+    }
+  },
+  "gemini_function_declarations": [
+    {
+      "name": "select_spawn",
+      "description": "Select an initial spawn territory location during the spawn phase using normalized [0..1] viewport coordinates.",
+      "behavior": "NON_BLOCKING",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "x": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Normalized horizontal coordinate [0..1]" },
+          "y": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Normalized vertical coordinate [0..1]" },
+          "rationale": { "type": "STRING", "minLength": 1, "description": "Brief tactical reason for choosing this spawn point" }
+        },
+        "required": ["x", "y", "rationale"]
+      }
+    },
+    {
+      "name": "attack_territory",
+      "description": "Launch a ground or boat invasion toward normalized [0..1] target coordinates, optionally setting troop ratio first.",
+      "behavior": "NON_BLOCKING",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "x": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Normalized horizontal target coordinate [0..1]" },
+          "y": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Normalized vertical target coordinate [0..1]" },
+          "ratio_pct": { "type": "INTEGER", "minimum": 1, "maximum": 100, "description": "Optional troop attack ratio percentage [1..100]" },
+          "mode": { "type": "STRING", "enum": ["ground", "boat"], "description": "Invasion mode: ground click or boat hotkey" },
+          "rationale": { "type": "STRING", "minLength": 1, "description": "Brief tactical reason for this attack" }
+        },
+        "required": ["x", "y", "rationale"]
+      }
+    },
+    {
+      "name": "set_attack_ratio",
+      "description": "Adjust the troop commitment percentage slider/hotkeys between 1 and 100 percent.",
+      "behavior": "NON_BLOCKING",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "ratio_pct": { "type": "INTEGER", "minimum": 1, "maximum": 100, "description": "Target troop commitment percentage [1..100]" },
+          "rationale": { "type": "STRING", "minLength": 1, "description": "Brief tactical reason for changing attack ratio" }
+        },
+        "required": ["ratio_pct", "rationale"]
+      }
+    },
+    {
+      "name": "build_structure",
+      "description": "Construct a structure at normalized [0..1] coordinates using OpenFront build hotkeys and placement confirmation.",
+      "behavior": "NON_BLOCKING",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "structure": {
+            "type": "STRING",
+            "enum": [
+              "city",
+              "factory",
+              "port",
+              "defense_post",
+              "missile_silo",
+              "sam_launcher",
+              "warship",
+              "atom_bomb",
+              "hydrogen_bomb",
+              "mirv"
+            ],
+            "description": "Structure or special unit type to build or deploy"
+          },
+          "x": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Normalized horizontal placement coordinate [0..1]" },
+          "y": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Normalized vertical placement coordinate [0..1]" },
+          "rationale": { "type": "STRING", "minLength": 1, "description": "Brief economic or defensive reason for building here" }
+        },
+        "required": ["structure", "x", "y", "rationale"]
+      }
+    },
+    {
+      "name": "launch_special",
+      "description": "Deploy a naval warship or strategic nuclear strike at normalized [0..1] target coordinates.",
+      "behavior": "NON_BLOCKING",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "unit": {
+            "type": "STRING",
+            "enum": ["warship", "atom_bomb", "hydrogen_bomb", "mirv"],
+            "description": "Special unit or weapon type"
+          },
+          "x": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Normalized horizontal target coordinate [0..1]" },
+          "y": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Normalized vertical target coordinate [0..1]" },
+          "rationale": { "type": "STRING", "minLength": 1, "description": "Brief strategic reason for launching this unit" }
+        },
+        "required": ["unit", "x", "y", "rationale"]
+      }
+    },
+    {
+      "name": "diplomacy_action",
+      "description": "Perform a diplomacy or resource action targeting the player at normalized [0..1] coordinates.",
+      "behavior": "NON_BLOCKING",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "action": {
+            "type": "STRING",
+            "enum": ["request_alliance", "break_alliance", "target_player", "donate_troops", "donate_gold", "embargo"],
+            "description": "Diplomacy action to execute"
+          },
+          "x": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Normalized horizontal coordinate over target player [0..1]" },
+          "y": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Normalized vertical coordinate over target player [0..1]" },
+          "rationale": { "type": "STRING", "minLength": 1, "description": "Brief diplomatic reason for this action" }
+        },
+        "required": ["action", "x", "y", "rationale"]
+      }
+    },
+    {
+      "name": "camera_control",
+      "description": "Pan, zoom, center camera, or toggle alternate terrain / coordinate grid views.",
+      "behavior": "NON_BLOCKING",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "pan": { "type": "STRING", "enum": ["up", "down", "left", "right"], "description": "Camera pan direction" },
+          "pan_ms": { "type": "INTEGER", "minimum": 100, "maximum": 800, "description": "Duration in ms to hold pan key" },
+          "zoom_steps": { "type": "INTEGER", "minimum": -5, "maximum": 5, "description": "Negative zooms out, positive zooms in" },
+          "toggle_alt_view": { "type": "BOOLEAN", "description": "Momentarily toggle terrain-only alternate view" },
+          "toggle_coord_grid": { "type": "BOOLEAN", "description": "Toggle native OpenFront coordinate grid (KeyM)" },
+          "center_camera": { "type": "BOOLEAN", "description": "Recenter camera on own territory (KeyC)" },
+          "rationale": { "type": "STRING", "minLength": 1, "description": "Reason for adjusting camera or view" }
+        },
+        "required": ["rationale"]
+      }
+    },
+    {
+      "name": "zoom_map",
+      "description": "Zoom the OpenFront map camera in or out via discrete scroll wheel steps without clicking.",
+      "behavior": "NON_BLOCKING",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "direction": { "type": "STRING", "enum": ["in", "out"], "description": "Zoom direction" },
+          "steps": { "type": "INTEGER", "minimum": 1, "maximum": 8, "description": "Number of discrete wheel zoom steps [1..8]" },
+          "x": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Optional normalized horizontal anchor [0..1], defaults to 0.5" },
+          "y": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Optional normalized vertical anchor [0..1], defaults to 0.5" },
+          "rationale": { "type": "STRING", "minLength": 1, "description": "Reason for zooming in or out right now" }
+        },
+        "required": ["direction", "steps", "rationale"]
+      }
+    },
+    {
+      "name": "pan_map",
+      "description": "Pan the OpenFront map camera smoothly using WASD hotkeys (never triggers clicks or accidental attacks).",
+      "behavior": "NON_BLOCKING",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "direction": {
+            "type": "STRING",
+            "enum": ["up", "down", "left", "right", "up_left", "up_right", "down_left", "down_right"],
+            "description": "Cardinal or diagonal camera pan direction"
+          },
+          "duration_ms": { "type": "INTEGER", "minimum": 100, "maximum": 1200, "description": "Duration in ms to hold pan key(s)" },
+          "center_camera": { "type": "BOOLEAN", "description": "Optional KeyC recenter before panning" },
+          "rationale": { "type": "STRING", "minLength": 1, "description": "Reason for panning the viewport" }
+        },
+        "required": ["direction", "duration_ms", "rationale"]
+      }
+    },
+    {
+      "name": "wait_observe",
+      "description": "Hold actions briefly to observe troop movement, income growth, or enemy response.",
+      "behavior": "NON_BLOCKING",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "duration_ms": { "type": "INTEGER", "minimum": 500, "maximum": 5000, "description": "Observation wait window in milliseconds" },
+          "rationale": { "type": "STRING", "minLength": 1, "description": "Why waiting is advantageous right now" }
+        },
+        "required": ["duration_ms", "rationale"]
+      }
+    },
+    {
+      "name": "focus_region",
+      "description": "Zoom smoothly onto a normalized [0..1] viewport coordinate anchor without clicking.",
+      "behavior": "NON_BLOCKING",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "x": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Normalized horizontal anchor coordinate [0..1]" },
+          "y": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Normalized vertical anchor coordinate [0..1]" },
+          "zoom_steps": { "type": "INTEGER", "minimum": 1, "maximum": 6, "description": "Number of zoom-in scroll wheel steps [1..6]" },
+          "rationale": { "type": "STRING", "minLength": 1, "description": "Reason for focusing on this region" }
+        },
+        "required": ["x", "y", "zoom_steps", "rationale"]
+      }
+    },
+    {
+      "name": "reset_overview",
+      "description": "Recenter camera on own territory (KeyC) and zoom out to regain strategic map overview.",
+      "behavior": "NON_BLOCKING",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "zoom_out_steps": { "type": "INTEGER", "minimum": 1, "maximum": 12, "description": "Optional number of zoom-out scroll steps [1..12]" },
+          "rationale": { "type": "STRING", "minLength": 1, "description": "Reason for resetting camera to overview" }
+        },
+        "required": ["rationale"]
+      }
+    },
+    {
+      "name": "execute_plan",
+      "description": "Execute a batched sequence of 1 to 5 ordered sub-actions with abort-on-error semantics.",
+      "behavior": "NON_BLOCKING",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "actions": {
+            "type": "ARRAY",
+            "minItems": 1,
+            "maxItems": 5,
+            "description": "Ordered sequence of sub-actions to run sequentially",
+            "items": {
+              "type": "OBJECT",
+              "properties": {
+                "tool_name": { "type": "STRING", "minLength": 1, "description": "Target tool name (excluding execute_plan)" },
+                "arguments": { "type": "OBJECT", "description": "Arguments for the target tool" }
+              },
+              "required": ["tool_name", "arguments"]
+            }
+          },
+          "step_delay_ms": { "type": "INTEGER", "minimum": 80, "maximum": 250, "description": "Delay between sequential sub-actions in milliseconds [80..250]" },
+          "rationale": { "type": "STRING", "minLength": 1, "description": "Brief tactical goal for this action batch" }
+        },
+        "required": ["actions", "rationale"]
+      }
+    },
+    {
+      "name": "expand_burst",
+      "description": "Launch a rapid multi-vector ground expansion burst of 3-4 staggered clicks around normalized [0..1] front coordinates.",
+      "behavior": "NON_BLOCKING",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "x": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Normalized horizontal burst center [0..1]" },
+          "y": { "type": "NUMBER", "minimum": 0.0, "maximum": 1.0, "description": "Normalized vertical burst center [0..1]" },
+          "spread": { "type": "NUMBER", "minimum": 0.02, "maximum": 0.15, "description": "Normalized coordinate spread offset [0.02..0.15]" },
+          "count": { "type": "INTEGER", "minimum": 3, "maximum": 4, "description": "Number of staggered strikes [3..4]" },
+          "ratio_pct": { "type": "INTEGER", "minimum": 1, "maximum": 100, "description": "Optional troop attack ratio percentage before burst [1..100]" },
+          "rationale": { "type": "STRING", "minLength": 1, "description": "Brief tactical reason for expansion burst" }
+        },
+        "required": ["x", "y", "rationale"]
+      }
+    }
+  ]
+}

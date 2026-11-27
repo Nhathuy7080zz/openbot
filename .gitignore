@@ -1,0 +1,33 @@
+# Dependencies & build outputs
+node_modules/
+bridge/.venv/
+dist/
+coverage/
+
+# Vendor game server (clone OpenFrontIO separately for local dev)
+vendor/
+
+# Logs, screenshots, recordings & runtime artifacts
+logs/
+artifacts/
+*.log
+*.png
+*.jsonl
+
+# Secrets, local env & bridge runtime session state
+.env
+.env.local
+.env.*.local
+bridge/.openbot-session.json
+
+# Internal planning notes, interaction dump & session checkpoints
+plans/
+docs/sessions/
+docs/openfront-interaction-map.md
+
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
